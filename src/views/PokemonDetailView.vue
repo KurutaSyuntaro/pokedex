@@ -6,6 +6,7 @@ import { usePokedexStore } from "@/stores/pokedex";
 import {
   attachSpriteFallback,
   buildSpriteCandidates,
+  buildEvolutionTree,
   buildMoveRecords,
   collectMoveGenerationOptions,
   computeTypeMatchups,
@@ -24,6 +25,7 @@ import {
 import { GENERATION_LABELS } from "@/data/generations";
 import type {
   AppearanceData,
+  EvolutionNode,
   MoveEntry,
   MoveGenerationOption,
   PokeApiPokemon,
@@ -34,6 +36,7 @@ import type {
 } from "@/types/pokemon";
 import TypeBadge from "@/components/TypeBadge.vue";
 import MoveList from "@/components/MoveList.vue";
+import EvolutionTree from "@/components/EvolutionTree.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -52,6 +55,7 @@ const moveNameMap = ref<Record<string, string>>({});
 const moveGenerationOptions = ref<MoveGenerationOption[]>([]);
 const selectedGenerationKey = ref<string>("");
 const typeDamageRelations = ref<Record<string, TypeDamageRelations>>({});
+const evolutionTree = ref<EvolutionNode | null>(null);
 
 const dexFromQuery = computed<number | null>(() => {
   const v = route.query.dex;
@@ -273,6 +277,17 @@ async function loadDetail(): Promise<void> {
     typeNameMap.value = typeMap;
     abilityNameMap.value = abilityMap;
     typeDamageRelations.value = damageRelations;
+    evolutionTree.value = null;
+    const evoUrl = fetchedSpecies.evolution_chain?.url;
+    if (evoUrl) {
+      buildEvolutionTree(evoUrl)
+        .then((tree) => {
+          if (species.value === fetchedSpecies) {
+            evolutionTree.value = tree;
+          }
+        })
+        .catch((error) => console.error(error));
+    }
     moveGenerationOptions.value = collectMoveGenerationOptions(
       fetchedPokemon,
       appearanceData.versionGroupMap,
@@ -427,6 +442,25 @@ watch(
             </div>
           </li>
         </ul>
+      </section>
+
+      <section
+        v-if="evolutionTree"
+        class="info-card evolution-card"
+        aria-label="進化"
+      >
+        <div class="evolution-header">
+          <h2>進化</h2>
+          <p v-if="!evolutionTree.children.length" class="card-note">
+            このポケモンは進化しません
+          </p>
+        </div>
+        <div class="evolution-canvas">
+          <EvolutionTree
+            :node="evolutionTree"
+            :current-species="species?.name"
+          />
+        </div>
       </section>
 
       <section class="info-card stats-card">
@@ -724,6 +758,24 @@ watch(
   .matchup-row {
     grid-template-columns: 1fr;
   }
+}
+
+.evolution-card {
+  display: grid;
+  gap: 12px;
+}
+
+.evolution-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.evolution-canvas {
+  overflow-x: auto;
+  padding-bottom: 4px;
 }
 
 .stats-card {

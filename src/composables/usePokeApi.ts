@@ -17,8 +17,12 @@ import { lookupJaOverride } from "@/data/jaNameOverrides";
 import { POKEMON_TYPES } from "@/data/pokemonTypes";
 import type {
   AppearanceData,
+  EvolutionNode,
   MoveEntry,
   MoveGenerationOption,
+  PokeApiChainLink,
+  PokeApiEvolutionChain,
+  PokeApiEvolutionDetail,
   PokeApiNameEntry,
   PokeApiPokemon,
   PokeApiPokemonMove,
@@ -49,6 +53,7 @@ const TYPE_INDEX_CACHE_KEY = "pokedex-type-index-cache-v1";
 const POKEDEX_ENTRIES_CACHE_KEY = "pokedex-pokedex-entries-cache-v1";
 const TYPE_DAMAGE_RELATIONS_CACHE_KEY =
   "pokedex-type-damage-relations-cache-v1";
+const EVOLUTION_CHAIN_CACHE_KEY = "pokedex-evolution-chain-cache-v1";
 
 const TRANSPARENT_PIXEL =
   "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
@@ -951,6 +956,174 @@ export function computeTypeMatchups(
         label: POKEMON_TYPES.find((t) => t.value === atk)?.label || atk,
       })),
   })).filter((group) => group.types.length > 0);
+}
+
+// ---------- 進化チェイン ----------
+
+const TIME_OF_DAY_LABELS: Record<string, string> = {
+  day: "昼",
+  night: "夜",
+  dusk: "夕方",
+};
+
+const TRIGGER_LABELS: Record<string, string> = {
+  "level-up": "レベルアップ",
+  trade: "通信交換",
+  "use-item": "道具使用",
+  shed: "ぬけがら",
+  spin: "回転",
+  "tower-of-darkness": "あくのとう",
+  "tower-of-waters": "みずのとう",
+  "three-critical-hits": "急所3回",
+  "take-damage": "ダメージを受けて",
+  other: "特殊条件",
+  "agile-style-move": "アジャイル習得",
+  "strong-style-move": "ストロング習得",
+  "recoil-damage": "反動ダメージ",
+};
+
+function describeEvolutionDetail(detail: PokeApiEvolutionDetail): string[] {
+  const parts: string[] = [];
+  if (detail.min_level != null) parts.push(`Lv.${detail.min_level}`);
+  if (detail.trigger?.name && detail.trigger.name !== "level-up") {
+    parts.push(
+      TRIGGER_LABELS[detail.trigger.name] || formatSlug(detail.trigger.name),
+    );
+  }
+  if (detail.item?.name) parts.push(`${formatSlug(detail.item.name)} 使用`);
+  if (detail.held_item?.name)
+    parts.push(`${formatSlug(detail.held_item.name)} を持たせる`);
+  if (detail.known_move?.name)
+    parts.push(`${formatSlug(detail.known_move.name)} 習得`);
+  if (detail.known_move_type?.name)
+    parts.push(`${formatSlug(detail.known_move_type.name)} タイプの技習得`);
+  if (detail.location?.name)
+    parts.push(`${formatSlug(detail.location.name)} で`);
+  if (detail.party_species?.name)
+    parts.push(`手持ちに ${formatSlug(detail.party_species.name)}`);
+  if (detail.party_type?.name)
+    parts.push(`手持ちに ${formatSlug(detail.party_type.name)} タイプ`);
+  if (detail.trade_species?.name)
+    parts.push(`${formatSlug(detail.trade_species.name)} と交換`);
+  if (detail.min_happiness != null)
+    parts.push(`なつき度 ${detail.min_happiness}+`);
+  if (detail.min_beauty != null) parts.push(`美しさ ${detail.min_beauty}+`);
+  if (detail.min_affection != null)
+    parts.push(`なかよし度 ${detail.min_affection}+`);
+  if (detail.time_of_day) {
+    const tod = TIME_OF_DAY_LABELS[detail.time_of_day] || detail.time_of_day;
+    parts.push(`${tod}`);
+  }
+  if (detail.gender === 1) parts.push("♀");
+  else if (detail.gender === 2) parts.push("♂");
+  if (detail.relative_physical_stats === 1) parts.push("こうげき > ぼうぎょ");
+  else if (detail.relative_physical_stats === -1)
+    parts.push("こうげき < ぼうぎょ");
+  else if (detail.relative_physical_stats === 0)
+    parts.push("こうげき = ぼうぎょ");
+  if (detail.needs_overworld_rain) parts.push("雨天時");
+  if (detail.turn_upside_down) parts.push("本体を逆さにする");
+  return parts;
+}
+
+/** 進化チェイン JSON を取得 (sessionStorage キャッシュ) */
+export async function fetchEvolutionChain(
+  url: string,
+): Promise<PokeApiEvolutionChain> {
+  const cache = readSessionCache<Record<string, PokeApiEvolutionChain>>(
+    EVOLUTION_CHAIN_CACHE_KEY,
+  );
+  if (cache[url]) return cache[url];
+  const payload = await fetchJson<PokeApiEvolutionChain>(url);
+  cache[url] = payload;
+  writeSessionCache(EVOLUTION_CHAIN_CACHE_KEY, cache);
+  return payload;
+}
+
+function collectSpeciesNames(link: PokeApiChainLink, acc: string[]): void {
+  acc.push(link.species.name);
+  for (const child of link.evolves_to || []) {
+    collectSpeciesNames(child, acc);
+  }
+}
+
+/**
+ * チェイン中のすべての species の dex 番号 → 日本語名を解決。
+ * 既存の SPECIES_NAME_CACHE_KEY (localStorage) を再利用。
+ */
+async function resolveChainSpeciesMeta(
+  speciesNames: string[],
+): Promise<Record<string, { id: number; nameJa: string }>> {
+  const result: Record<string, { id: number; nameJa: string }> = {};
+  const unique = [...new Set(speciesNames)];
+  for (const group of chunk(unique, FETCH_CONCURRENCY)) {
+    const responses = await Promise.all(
+      group.map(async (name) => {
+        try {
+          const payload = await fetchJson<PokeApiSpecies>(
+            `https://pokeapi.co/api/v2/pokemon-species/${name}`,
+          );
+          const nameJa =
+            payload.names?.find((e) => e.language?.name === "ja-Hrkt")?.name ||
+            payload.names?.find((e) => e.language?.name === "ja")?.name ||
+            lookupJaOverride(name) ||
+            formatSlug(name);
+          return [name, { id: payload.id, nameJa }] as const;
+        } catch {
+          return [
+            name,
+            { id: 0, nameJa: lookupJaOverride(name) || formatSlug(name) },
+          ] as const;
+        }
+      }),
+    );
+    for (const [name, meta] of responses) {
+      result[name] = meta;
+    }
+  }
+  return result;
+}
+
+function buildEvolutionNode(
+  link: PokeApiChainLink,
+  meta: Record<string, { id: number; nameJa: string }>,
+): EvolutionNode {
+  const m = meta[link.species.name] || {
+    id: 0,
+    nameJa: formatSlug(link.species.name),
+  };
+  const conditions: string[] = [];
+  for (const detail of link.evolution_details || []) {
+    const parts = describeEvolutionDetail(detail);
+    if (parts.length) {
+      conditions.push(parts.join(" / "));
+    }
+  }
+  return {
+    speciesName: link.species.name,
+    speciesId: m.id,
+    nameJa: m.nameJa,
+    spriteCandidates: m.id ? buildSpriteCandidates(m.id, m.id, false) : [],
+    isBaby: link.is_baby,
+    conditions,
+    children: (link.evolves_to || []).map((c) => buildEvolutionNode(c, meta)),
+  };
+}
+
+/** チェイン URL から表示用ツリーを構築 */
+export async function buildEvolutionTree(
+  url: string,
+): Promise<EvolutionNode | null> {
+  try {
+    const chain = await fetchEvolutionChain(url);
+    const names: string[] = [];
+    collectSpeciesNames(chain.chain, names);
+    const meta = await resolveChainSpeciesMeta(names);
+    return buildEvolutionNode(chain.chain, meta);
+  } catch (error) {
+    console.error("[pokedex] failed to build evolution tree", error);
+    return null;
+  }
 }
 
 export { formatSlug };

@@ -102,6 +102,51 @@ export interface PokeApiSpecies {
   names?: PokeApiNameEntry[];
   generation?: NamedApiResource;
   genera?: { genus: string; language: NamedApiResource }[];
+  evolution_chain?: { url: string };
+}
+
+export interface PokeApiEvolutionDetail {
+  trigger?: NamedApiResource;
+  item?: NamedApiResource;
+  held_item?: NamedApiResource;
+  known_move?: NamedApiResource;
+  known_move_type?: NamedApiResource;
+  location?: NamedApiResource;
+  party_species?: NamedApiResource;
+  party_type?: NamedApiResource;
+  trade_species?: NamedApiResource;
+  min_level?: number | null;
+  min_happiness?: number | null;
+  min_beauty?: number | null;
+  min_affection?: number | null;
+  needs_overworld_rain?: boolean;
+  turn_upside_down?: boolean;
+  time_of_day?: string;
+  gender?: number | null;
+  relative_physical_stats?: number | null;
+}
+
+export interface PokeApiChainLink {
+  is_baby: boolean;
+  species: NamedApiResource;
+  evolution_details: PokeApiEvolutionDetail[];
+  evolves_to: PokeApiChainLink[];
+}
+
+export interface PokeApiEvolutionChain {
+  id: number;
+  baby_trigger_item: NamedApiResource | null;
+  chain: PokeApiChainLink;
+}
+
+export interface EvolutionNode {
+  speciesName: string;
+  speciesId: number;
+  nameJa: string;
+  spriteCandidates: string[];
+  isBaby: boolean;
+  conditions: string[];
+  children: EvolutionNode[];
 }
 
 export interface TypeDamageRelations {

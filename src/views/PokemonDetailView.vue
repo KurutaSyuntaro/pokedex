@@ -26,6 +26,7 @@ import type {
   MoveGenerationOption,
   PokeApiPokemon,
   PokeApiSpecies,
+  StatEntry,
 } from "@/types/pokemon";
 import TypeBadge from "@/components/TypeBadge.vue";
 import MoveList from "@/components/MoveList.vue";
@@ -111,6 +112,57 @@ const sortedTypes = computed(() => {
         formatSlug(entry.type?.name || "unknown"),
     }));
 });
+
+const STAT_LABELS: Record<string, string> = {
+  hp: "HP",
+  attack: "こうげき",
+  defense: "ぼうぎょ",
+  "special-attack": "とくこう",
+  "special-defense": "とくぼう",
+  speed: "すばやさ",
+};
+const STAT_ORDER = [
+  "hp",
+  "attack",
+  "defense",
+  "special-attack",
+  "special-defense",
+  "speed",
+];
+/** 種族値バーの最大値 (255 が事実上の上限) */
+const STAT_BAR_MAX = 255;
+
+const stats = computed<StatEntry[]>(() => {
+  if (!pokemon.value) return [];
+  const map = new Map<string, number>();
+  for (const entry of pokemon.value.stats) {
+    const key = entry.stat?.name;
+    if (!key) continue;
+    map.set(key, entry.base_stat);
+  }
+  return STAT_ORDER.filter((key) => map.has(key)).map((key) => ({
+    key,
+    label: STAT_LABELS[key] || formatSlug(key),
+    value: map.get(key) as number,
+  }));
+});
+
+const statTotal = computed<number>(() =>
+  stats.value.reduce((sum, s) => sum + s.value, 0),
+);
+
+function statBarWidth(value: number): string {
+  const ratio = Math.min(1, Math.max(0, value / STAT_BAR_MAX));
+  return `${(ratio * 100).toFixed(1)}%`;
+}
+
+function statBarClass(value: number): string {
+  if (value >= 150) return "stat-bar--max";
+  if (value >= 110) return "stat-bar--high";
+  if (value >= 80) return "stat-bar--mid";
+  if (value >= 50) return "stat-bar--low";
+  return "stat-bar--min";
+}
 
 const moves = computed<MoveEntry[]>(() => {
   if (!pokemon.value || !appearance.value || !selectedGenerationKey.value)
@@ -329,6 +381,28 @@ watch(
         </article>
       </section>
 
+      <section class="info-card stats-card">
+        <div class="stats-header">
+          <h2>種族値</h2>
+          <p class="stats-total">
+            合計 <strong>{{ statTotal }}</strong>
+          </p>
+        </div>
+        <ul class="stat-list">
+          <li v-for="s in stats" :key="s.key" class="stat-row">
+            <span class="stat-label">{{ s.label }}</span>
+            <span class="stat-value">{{ s.value }}</span>
+            <span class="stat-bar">
+              <span
+                class="stat-bar-fill"
+                :class="statBarClass(s.value)"
+                :style="{ width: statBarWidth(s.value) }"
+              />
+            </span>
+          </li>
+        </ul>
+      </section>
+
       <section class="moves-card">
         <div class="moves-header">
           <h2>覚える技</h2>
@@ -519,6 +593,87 @@ watch(
   font-size: 0.86rem;
 }
 
+.stats-card {
+  display: grid;
+  gap: 12px;
+}
+
+.stats-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stats-total {
+  margin: 0;
+  color: var(--text-sub);
+  font-size: 0.9rem;
+}
+
+.stats-total strong {
+  color: var(--text);
+  font-size: 1.05rem;
+  margin-left: 4px;
+}
+
+.stat-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: 84px 48px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.stat-label {
+  color: var(--text-sub);
+  font-size: 0.88rem;
+}
+
+.stat-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  text-align: right;
+}
+
+.stat-bar {
+  position: relative;
+  height: 10px;
+  background: var(--accent-soft, #eef2f7);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.stat-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.3s ease;
+}
+
+.stat-bar--min {
+  background: #e57373;
+}
+.stat-bar--low {
+  background: #ffb74d;
+}
+.stat-bar--mid {
+  background: #fdd835;
+}
+.stat-bar--high {
+  background: #81c784;
+}
+.stat-bar--max {
+  background: #4fc3f7;
+}
+
 .moves-header {
   display: flex;
   align-items: baseline;
@@ -584,6 +739,11 @@ watch(
 
   .info-grid {
     grid-template-columns: 1fr;
+  }
+
+  .stat-row {
+    grid-template-columns: 72px 40px 1fr;
+    gap: 8px;
   }
 }
 </style>

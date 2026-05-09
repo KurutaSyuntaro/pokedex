@@ -18,8 +18,11 @@ import { POKEMON_TYPES } from "@/data/pokemonTypes";
 import type {
   AppearanceData,
   EvolutionNode,
+  FlavorTextEntry,
   MoveEntry,
   MoveGenerationOption,
+  NamedApiResource,
+  PokeApiAbility,
   PokeApiChainLink,
   PokeApiEvolutionChain,
   PokeApiEvolutionDetail,
@@ -30,6 +33,9 @@ import type {
   Pokemon,
   TypeDamageRelations,
   TypeMatchupGroup,
+  TypeRelationsPast,
+  TypeWithPast,
+  AbilityInfo,
   VersionGroupCacheEntry,
 } from "@/types/pokemon";
 
@@ -534,6 +540,85 @@ export function fetchAbilityNameMap(
   return fetchResourceNameMap(abilities, ABILITY_NAME_CACHE_KEY, "ability");
 }
 
+const ABILITY_INFO_CACHE_KEY = "pokedex-ability-info-cache-v1";
+
+/**
+ * 特性の日本語名 + 日本語フレーバー説明文を取得（sessionStorage キャッシュ）。
+ */
+export async function fetchAbilityInfoMap(
+  abilities: string[],
+): Promise<Record<string, AbilityInfo>> {
+  const cache = readSessionCache<Record<string, AbilityInfo>>(
+    ABILITY_INFO_CACHE_KEY,
+  );
+  const uniqueNames = [...new Set(abilities.filter(Boolean))];
+  const missing = uniqueNames.filter((n) => !cache[n]);
+
+  for (const group of chunk(missing, FETCH_CONCURRENCY)) {
+    const results = await Promise.all(
+      group.map(async (name): Promise<[string, AbilityInfo]> => {
+        const payload = await fetchJson<PokeApiAbility>(
+          `https://pokeapi.co/api/v2/ability/${name}`,
+        );
+        const nameJa = findLocalizedText(payload.names) || formatSlug(name);
+        // ja-Hrkt 優先、次に ja。最新の version_group のものを採用
+        const flavors = (payload.flavor_text_entries || []).filter(
+          (e) => e.language?.name === "ja-Hrkt" || e.language?.name === "ja",
+        );
+        const preferred =
+          [...flavors].reverse().find((e) => e.language?.name === "ja-Hrkt") ||
+          flavors.at(-1);
+        const flavorJa = (preferred?.flavor_text || "")
+          .replace(/[\n\f\u00ad]+/g, " ")
+          .trim();
+        return [name, { key: name, nameJa, flavorJa }];
+      }),
+    );
+    for (const [name, info] of results) {
+      cache[name] = info;
+    }
+  }
+  if (missing.length) writeSessionCache(ABILITY_INFO_CACHE_KEY, cache);
+  return Object.fromEntries(uniqueNames.map((n) => [n, cache[n]]));
+}
+
+const NAMED_RESOURCE_LABEL_CACHE_KEY = "pokedex-named-resource-label-cache-v1";
+
+/**
+ * 任意エンドポイント（egg-group / growth-rate など）の日本語名を取得。
+ */
+export async function fetchNamedResourceLabels(
+  endpoint: string,
+  names: string[],
+): Promise<Record<string, string>> {
+  const all = readSessionCache<Record<string, Record<string, string>>>(
+    NAMED_RESOURCE_LABEL_CACHE_KEY,
+  );
+  const cache = all[endpoint] || {};
+  const unique = [...new Set(names.filter(Boolean))];
+  const missing = unique.filter((n) => !cache[n]);
+  for (const group of chunk(missing, FETCH_CONCURRENCY)) {
+    const results = await Promise.all(
+      group.map(async (name): Promise<[string, string]> => {
+        try {
+          const payload = await fetchJson<{ names?: PokeApiNameEntry[] }>(
+            `https://pokeapi.co/api/v2/${endpoint}/${name}`,
+          );
+          return [name, findLocalizedText(payload.names) || formatSlug(name)];
+        } catch {
+          return [name, formatSlug(name)];
+        }
+      }),
+    );
+    for (const [n, label] of results) cache[n] = label;
+  }
+  if (missing.length) {
+    all[endpoint] = cache;
+    writeSessionCache(NAMED_RESOURCE_LABEL_CACHE_KEY, all);
+  }
+  return Object.fromEntries(unique.map((n) => [n, cache[n]]));
+}
+
 export async function fetchMoveNameMap(
   moves: PokeApiPokemonMove[],
 ): Promise<Record<string, string>> {
@@ -876,24 +961,38 @@ export function parseFormFromName(name: string) {
 
 /**
  * 指定タイプ（防御側）の damage_relations を取得。
+ * past_damage_relations も保持し、世代別ルックアップに使う。
  * localStorage に永続キャッシュ（タイプは18種で固定なので長期キャッシュ可）。
  */
 export async function fetchTypeDamageRelations(
   typeNames: string[],
-): Promise<Record<string, TypeDamageRelations>> {
-  const cache = readLocalCache<Record<string, TypeDamageRelations>>(
+): Promise<Record<string, TypeWithPast>> {
+  const cache = readLocalCache<Record<string, TypeWithPast>>(
     TYPE_DAMAGE_RELATIONS_CACHE_KEY,
   );
   const unique = [...new Set(typeNames.filter(Boolean))];
-  const missing = unique.filter((name) => !cache[name]);
+  const missing = unique.filter((name) => {
+    const entry = cache[name];
+    // 旧形式（damage_relations 直接）から past_damage_relations 付きへ
+    return (
+      !entry || !Array.isArray((entry as TypeWithPast).past_damage_relations)
+    );
+  });
 
   for (const group of chunk(missing, FETCH_CONCURRENCY)) {
     const results = await Promise.all(
-      group.map(async (name): Promise<[string, TypeDamageRelations]> => {
+      group.map(async (name): Promise<[string, TypeWithPast]> => {
         const payload = await fetchJson<{
           damage_relations: TypeDamageRelations;
+          past_damage_relations?: TypeRelationsPast[];
         }>(`https://pokeapi.co/api/v2/type/${name}`);
-        return [name, payload.damage_relations];
+        return [
+          name,
+          {
+            damage_relations: payload.damage_relations,
+            past_damage_relations: payload.past_damage_relations || [],
+          },
+        ];
       }),
     );
     for (const [name, rel] of results) {
@@ -904,6 +1003,31 @@ export async function fetchTypeDamageRelations(
     writeLocalCache(TYPE_DAMAGE_RELATIONS_CACHE_KEY, cache);
   }
   return Object.fromEntries(unique.map((n) => [n, cache[n]]));
+}
+
+/**
+ * past_damage_relations は「この世代まで」の旧仕様。
+ * 指定世代で有効な damage_relations を返す。
+ */
+function resolveDamageRelationsForGeneration(
+  type: TypeWithPast | undefined,
+  generationKey: string,
+): TypeDamageRelations | undefined {
+  if (!type) return undefined;
+  const rank = GENERATION_ORDER[generationKey] || 0;
+  if (!rank) return type.damage_relations;
+  // past_damage_relations は世代の昇順とは限らないので並べ替え
+  const past = (type.past_damage_relations || [])
+    .map((p) => ({
+      rank: GENERATION_ORDER[p.generation?.name || ""] || 0,
+      relations: p.damage_relations,
+    }))
+    .filter((p) => p.rank > 0)
+    .sort((a, b) => a.rank - b.rank);
+  for (const entry of past) {
+    if (rank <= entry.rank) return entry.relations;
+  }
+  return type.damage_relations;
 }
 
 const MATCHUP_GROUP_DEFS: {
@@ -921,10 +1045,12 @@ const MATCHUP_GROUP_DEFS: {
 /**
  * 防御側タイプ（最大2つ）から、攻撃側18タイプそれぞれの被ダメージ倍率を計算し、
  * 表示用にグルーピングして返す。等倍はノイズなので除外。
+ * generationKey を渡すとその世代の damage_relations を使用。
  */
 export function computeTypeMatchups(
   defenderTypes: string[],
-  damageRelations: Record<string, TypeDamageRelations>,
+  damageRelations: Record<string, TypeWithPast>,
+  generationKey = "",
 ): TypeMatchupGroup[] {
   const allAttackTypes = POKEMON_TYPES.map((t) => t.value);
   const multipliers = new Map<string, number>();
@@ -932,7 +1058,12 @@ export function computeTypeMatchups(
   for (const atk of allAttackTypes) {
     let factor = 1;
     for (const def of defenderTypes) {
-      const rel = damageRelations[def];
+      const rel = generationKey
+        ? resolveDamageRelationsForGeneration(
+            damageRelations[def],
+            generationKey,
+          )
+        : damageRelations[def]?.damage_relations;
       if (!rel) continue;
       if (rel.no_damage_from?.some((t) => t.name === atk)) {
         factor *= 0;
@@ -1124,6 +1255,136 @@ export async function buildEvolutionTree(
     console.error("[pokedex] failed to build evolution tree", error);
     return null;
   }
+}
+
+// ---------- 世代別解決ヘルパー ----------
+
+/**
+ * 各世代の上限を表す。past_* は「この世代まで（以前）の値」のため、
+ * 指定世代 ≤ 過去エントリ世代 ならその過去値を採用、なければ現行値。
+ */
+function resolveByGeneration<T>(
+  pastEntries:
+    | { generation?: NamedApiResource | null; payload: T }[]
+    | undefined,
+  current: T,
+  generationKey: string,
+): T {
+  const rank = GENERATION_ORDER[generationKey] || 0;
+  if (!rank || !pastEntries?.length) return current;
+  const sorted = pastEntries
+    .map((e) => ({
+      rank: GENERATION_ORDER[e.generation?.name || ""] || 0,
+      payload: e.payload,
+    }))
+    .filter((e) => e.rank > 0)
+    .sort((a, b) => a.rank - b.rank);
+  for (const e of sorted) {
+    if (rank <= e.rank) return e.payload;
+  }
+  return current;
+}
+
+/** 指定世代における種族値を返す */
+export function resolveStatsForGeneration(
+  pokemon: PokeApiPokemon,
+  generationKey: string,
+): PokeApiPokemon["stats"] {
+  const past = (pokemon.past_stats || []).map((p) => ({
+    generation: p.generation,
+    payload: p.stats,
+  }));
+  return resolveByGeneration(past, pokemon.stats, generationKey);
+}
+
+/** 指定世代におけるタイプを返す */
+export function resolveTypesForGeneration(
+  pokemon: PokeApiPokemon,
+  generationKey: string,
+): PokeApiPokemon["types"] {
+  const past = (pokemon.past_types || []).map((p) => ({
+    generation: p.generation,
+    payload: p.types,
+  }));
+  return resolveByGeneration(past, pokemon.types, generationKey);
+}
+
+/** 指定世代における特性を返す（null スロットは現行から補完） */
+export function resolveAbilitiesForGeneration(
+  pokemon: PokeApiPokemon,
+  generationKey: string,
+): PokeApiPokemon["abilities"] {
+  const rank = GENERATION_ORDER[generationKey] || 0;
+  if (!rank || !pokemon.past_abilities?.length) return pokemon.abilities;
+  const sorted = pokemon.past_abilities
+    .map((p) => ({
+      rank: GENERATION_ORDER[p.generation?.name || ""] || 0,
+      abilities: p.abilities,
+    }))
+    .filter((e) => e.rank > 0)
+    .sort((a, b) => a.rank - b.rank);
+  for (const entry of sorted) {
+    if (rank <= entry.rank) {
+      // past_abilities はスロット単位の差分。現行から始めて該当スロットを上書き、
+      // ability が null のスロットは「存在しなかった」とみなして除外。
+      const merged = new Map<number, PokeApiPokemon["abilities"][number]>();
+      for (const a of pokemon.abilities) merged.set(a.slot, a);
+      for (const a of entry.abilities) {
+        if (a.ability == null) {
+          merged.delete(a.slot);
+        } else {
+          merged.set(a.slot, {
+            slot: a.slot,
+            ability: a.ability,
+            is_hidden: a.is_hidden,
+          });
+        }
+      }
+      return [...merged.values()].sort((a, b) => a.slot - b.slot);
+    }
+  }
+  return pokemon.abilities;
+}
+
+// ---------- 図鑑説明 (flavor text) ----------
+
+/**
+ * 日本語フレーバーテキストをバージョン別に整形して返す。
+ * version-group 情報が必要なので appearanceData の versionGroupMap を参照。
+ */
+export function buildFlavorTextEntries(
+  species: PokeApiSpecies,
+  versionGroupMap: Record<string, VersionGroupCacheEntry>,
+): FlavorTextEntry[] {
+  const entries = (species.flavor_text_entries || []).filter(
+    (e) => e.language?.name === "ja-Hrkt" || e.language?.name === "ja",
+  );
+  // ja-Hrkt 優先（重複バージョンは ja-Hrkt のみ採用）
+  const seen = new Map<string, FlavorTextEntry>();
+  for (const entry of entries) {
+    const versionKey = entry.version?.name;
+    if (!versionKey) continue;
+    if (seen.has(versionKey) && entry.language?.name !== "ja-Hrkt") continue;
+    // version -> version_group の対応を versionGroupMap から逆引き
+    const versionGroupName = Object.keys(versionGroupMap).find((vg) =>
+      versionGroupMap[vg]?.versions?.includes(versionKey),
+    );
+    const vg = versionGroupName ? versionGroupMap[versionGroupName] : null;
+    seen.set(versionKey, {
+      versionKey,
+      versionLabel: formatSlug(versionKey),
+      generationKey: vg?.generationKey || "",
+      generationLabel: vg?.generationLabel || "",
+      text: entry.flavor_text.replace(/[\n\f\u00ad]+/g, " ").trim(),
+    });
+  }
+  // 世代→バージョン名順にソート
+  return [...seen.values()].sort((a, b) => {
+    const ra = GENERATION_ORDER[a.generationKey] || 99;
+    const rb = GENERATION_ORDER[b.generationKey] || 99;
+    if (ra !== rb) return ra - rb;
+    return a.versionKey.localeCompare(b.versionKey);
+  });
 }
 
 export { formatSlug };

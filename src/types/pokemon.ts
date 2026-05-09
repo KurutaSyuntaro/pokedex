@@ -68,8 +68,30 @@ export interface PokeApiPokemon {
   weight: number;
   species: NamedApiResource;
   types: { slot: number; type: NamedApiResource }[];
-  abilities: { slot: number; ability: NamedApiResource }[];
+  past_types?: PokeApiPokemonTypePast[];
+  abilities: { slot: number; ability: NamedApiResource; is_hidden: boolean }[];
+  past_abilities?: PokeApiPokemonAbilityPast[];
   moves: PokeApiPokemonMove[];
+  stats: PokeApiPokemonStat[];
+  past_stats?: PokeApiPokemonStatPast[];
+}
+
+export interface PokeApiPokemonTypePast {
+  generation: NamedApiResource;
+  types: { slot: number; type: NamedApiResource }[];
+}
+
+export interface PokeApiPokemonAbilityPast {
+  generation: NamedApiResource;
+  abilities: {
+    slot: number;
+    ability: NamedApiResource | null;
+    is_hidden: boolean;
+  }[];
+}
+
+export interface PokeApiPokemonStatPast {
+  generation: NamedApiResource;
   stats: PokeApiPokemonStat[];
 }
 
@@ -103,6 +125,57 @@ export interface PokeApiSpecies {
   generation?: NamedApiResource;
   genera?: { genus: string; language: NamedApiResource }[];
   evolution_chain?: { url: string };
+  flavor_text_entries?: PokeApiFlavorTextEntry[];
+  gender_rate?: number;
+  capture_rate?: number;
+  base_happiness?: number | null;
+  hatch_counter?: number | null;
+  growth_rate?: NamedApiResource;
+  egg_groups?: NamedApiResource[];
+}
+
+export interface PokeApiAbility {
+  id: number;
+  name: string;
+  names?: PokeApiNameEntry[];
+  flavor_text_entries?: {
+    flavor_text: string;
+    language: NamedApiResource;
+    version_group: NamedApiResource;
+  }[];
+  effect_entries?: {
+    effect: string;
+    short_effect: string;
+    language: NamedApiResource;
+  }[];
+}
+
+export interface AbilityInfo {
+  key: string;
+  nameJa: string;
+  flavorJa: string;
+}
+
+export interface AbilityEntry {
+  key: string;
+  nameJa: string;
+  flavorJa: string;
+  isHidden: boolean;
+  slot: number;
+}
+
+export interface PokeApiFlavorTextEntry {
+  flavor_text: string;
+  language: NamedApiResource;
+  version: NamedApiResource;
+}
+
+export interface FlavorTextEntry {
+  versionKey: string;
+  versionLabel: string;
+  generationKey: string;
+  generationLabel: string;
+  text: string;
 }
 
 export interface PokeApiEvolutionDetail {
@@ -153,6 +226,16 @@ export interface TypeDamageRelations {
   double_damage_from: NamedApiResource[];
   half_damage_from: NamedApiResource[];
   no_damage_from: NamedApiResource[];
+}
+
+export interface TypeRelationsPast {
+  generation: NamedApiResource;
+  damage_relations: TypeDamageRelations;
+}
+
+export interface TypeWithPast {
+  damage_relations: TypeDamageRelations;
+  past_damage_relations: TypeRelationsPast[];
 }
 
 export interface TypeMatchupType {

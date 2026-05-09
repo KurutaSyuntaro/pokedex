@@ -7,12 +7,15 @@ import {
   attachSpriteFallback,
   buildSpriteCandidates,
   buildEvolutionTree,
+  buildFlavorTextEntries,
   buildMoveRecords,
   collectMoveGenerationOptions,
   computeTypeMatchups,
+  fetchAbilityInfoMap,
   fetchAbilityNameMap,
   fetchAppearanceData,
   fetchMoveNameMap,
+  fetchNamedResourceLabels,
   fetchPokemonDetail,
   fetchSpeciesDetail,
   fetchTypeDamageRelations,
@@ -21,18 +24,24 @@ import {
   formatSlug,
   generationLabelFor,
   parseFormFromName,
+  resolveAbilitiesForGeneration,
+  resolveStatsForGeneration,
+  resolveTypesForGeneration,
 } from "@/composables/usePokeApi";
-import { GENERATION_LABELS } from "@/data/generations";
+import { GENERATION_LABELS, GENERATION_ORDER } from "@/data/generations";
 import type {
+  AbilityEntry,
+  AbilityInfo,
   AppearanceData,
   EvolutionNode,
+  FlavorTextEntry,
   MoveEntry,
   MoveGenerationOption,
   PokeApiPokemon,
   PokeApiSpecies,
   StatEntry,
-  TypeDamageRelations,
   TypeMatchupGroup,
+  TypeWithPast,
 } from "@/types/pokemon";
 import TypeBadge from "@/components/TypeBadge.vue";
 import MoveList from "@/components/MoveList.vue";
@@ -51,11 +60,16 @@ const species = ref<PokeApiSpecies | null>(null);
 const appearance = ref<AppearanceData | null>(null);
 const typeNameMap = ref<Record<string, string>>({});
 const abilityNameMap = ref<Record<string, string>>({});
+const abilityInfoMap = ref<Record<string, AbilityInfo>>({});
+const eggGroupLabels = ref<Record<string, string>>({});
+const growthRateLabels = ref<Record<string, string>>({});
 const moveNameMap = ref<Record<string, string>>({});
 const moveGenerationOptions = ref<MoveGenerationOption[]>([]);
 const selectedGenerationKey = ref<string>("");
-const typeDamageRelations = ref<Record<string, TypeDamageRelations>>({});
+const typeDamageRelations = ref<Record<string, TypeWithPast>>({});
 const evolutionTree = ref<EvolutionNode | null>(null);
+/** ページ全体の表示世代（種族値・タイプ・特性・相性・図鑑説明に連動）。空文字列 = 現行。 */
+const viewGenerationKey = ref<string>("");
 
 const dexFromQuery = computed<number | null>(() => {
   const v = route.query.dex;
@@ -96,22 +110,99 @@ const weightLabel = computed<string>(() =>
   pokemon.value ? `${pokemon.value.weight / 10} kg` : "",
 );
 
-const abilitiesLabel = computed<string>(() => {
-  if (!pokemon.value) return "";
-  return pokemon.value.abilities
+const effectiveAbilities = computed(() => {
+  if (!pokemon.value) return [] as PokeApiPokemon["abilities"];
+  return resolveAbilitiesForGeneration(pokemon.value, viewGenerationKey.value);
+});
+const effectiveTypes = computed(() => {
+  if (!pokemon.value) return [] as PokeApiPokemon["types"];
+  return resolveTypesForGeneration(pokemon.value, viewGenerationKey.value);
+});
+const effectiveStats = computed(() => {
+  if (!pokemon.value) return [] as PokeApiPokemon["stats"];
+  return resolveStatsForGeneration(pokemon.value, viewGenerationKey.value);
+});
+
+const abilityEntries = computed<AbilityEntry[]>(() => {
+  if (!effectiveAbilities.value.length) return [];
+  // 特性は第3世代から導入された概念。第1・2世代では存在しない。
+  const rank = GENERATION_ORDER[viewGenerationKey.value] || 0;
+  if (rank > 0 && rank < 3) return [];
+  return effectiveAbilities.value
     .slice()
     .sort((a, b) => a.slot - b.slot)
-    .map(
-      (entry) =>
-        abilityNameMap.value[entry.ability?.name] ||
-        formatSlug(entry.ability?.name || "unknown"),
-    )
+    .map((entry) => {
+      const key = entry.ability?.name || "";
+      const info = abilityInfoMap.value[key];
+      return {
+        key,
+        slot: entry.slot,
+        isHidden: entry.is_hidden,
+        nameJa:
+          info?.nameJa ||
+          abilityNameMap.value[key] ||
+          formatSlug(key || "unknown"),
+        flavorJa: info?.flavorJa || "",
+      };
+    });
+});
+
+const genderLabel = computed<{ male: string; female: string } | null>(() => {
+  const rate = species.value?.gender_rate;
+  if (rate == null) return null;
+  if (rate < 0) return null; // 性別不明 (-1)
+  const female = (rate / 8) * 100;
+  const male = 100 - female;
+  return {
+    male: `${male.toFixed(male % 1 === 0 ? 0 : 1)}%`,
+    female: `${female.toFixed(female % 1 === 0 ? 0 : 1)}%`,
+  };
+});
+
+const eggGroupsLabel = computed<string>(() => {
+  const groups = species.value?.egg_groups || [];
+  if (!groups.length) return "—";
+  return groups
+    .map((g) => eggGroupLabels.value[g.name] || formatSlug(g.name))
     .join(" / ");
 });
 
+const growthRateLabel = computed<string>(() => {
+  const key = species.value?.growth_rate?.name;
+  if (!key) return "—";
+  return growthRateLabels.value[key] || formatSlug(key);
+});
+
+/** 孵化歩数 = (hatch_counter + 1) * 256 (Gen2 以降の汎用式) */
+const hatchStepsLabel = computed<string>(() => {
+  const hc = species.value?.hatch_counter;
+  if (hc == null) return "—";
+  return `${((hc + 1) * 256).toLocaleString()} 歩`;
+});
+
+const baseHappinessLabel = computed<string>(() => {
+  const v = species.value?.base_happiness;
+  return v == null ? "—" : String(v);
+});
+
+const captureRateLabel = computed<string>(() => {
+  const v = species.value?.capture_rate;
+  return v == null ? "—" : String(v);
+});
+
+/** 特性が第3世代から導入された旨のノート（第1・2世代選択時のみ表示） */
+const abilitiesUnavailableNote = computed<string>(() => {
+  const rank = GENERATION_ORDER[viewGenerationKey.value] || 0;
+  if (rank > 0 && rank < 3) {
+    return "特性は第3世代『ルビー・サファイア』から導入された概念のため、この世代には存在しません。";
+  }
+  return "";
+});
+
 const sortedTypes = computed(() => {
-  if (!pokemon.value) return [] as { slot: number; label: string }[];
-  return pokemon.value.types
+  if (!effectiveTypes.value.length)
+    return [] as { slot: number; label: string }[];
+  return effectiveTypes.value
     .slice()
     .sort((a, b) => a.slot - b.slot)
     .map((entry) => ({
@@ -142,9 +233,9 @@ const STAT_ORDER = [
 const STAT_BAR_MAX = 255;
 
 const stats = computed<StatEntry[]>(() => {
-  if (!pokemon.value) return [];
+  if (!effectiveStats.value.length) return [];
   const map = new Map<string, number>();
-  for (const entry of pokemon.value.stats) {
+  for (const entry of effectiveStats.value) {
     const key = entry.stat?.name;
     if (!key) continue;
     map.set(key, entry.base_stat);
@@ -197,19 +288,82 @@ const movesGenerationLabel = computed<string>(
 );
 
 const typeMatchups = computed<TypeMatchupGroup[]>(() => {
-  if (!pokemon.value) return [];
-  const defenderTypes = pokemon.value.types
+  if (!effectiveTypes.value.length) return [];
+  const defenderTypes = effectiveTypes.value
     .slice()
     .sort((a, b) => a.slot - b.slot)
     .map((entry) => entry.type?.name)
     .filter((v): v is string => Boolean(v));
   if (!defenderTypes.length) return [];
-  return computeTypeMatchups(defenderTypes, typeDamageRelations.value);
+  return computeTypeMatchups(
+    defenderTypes,
+    typeDamageRelations.value,
+    viewGenerationKey.value,
+  );
 });
 
 const dexNumber = computed(() => {
   if (dexFromQuery.value) return dexFromQuery.value;
   return species.value?.id || pokemon.value?.id || 0;
+});
+
+const ALL_GENERATION_KEYS = [
+  "generation-i",
+  "generation-ii",
+  "generation-iii",
+  "generation-iv",
+  "generation-v",
+  "generation-vi",
+  "generation-vii",
+  "generation-viii",
+  "generation-ix",
+];
+
+/** ページ世代セレクタの選択肢（種族の登場世代以降を列挙） */
+const viewGenerationOptions = computed<{ key: string; label: string }[]>(() => {
+  const debutKey = species.value?.generation?.name || "";
+  const debutRank = GENERATION_ORDER[debutKey] || 1;
+  return ALL_GENERATION_KEYS.filter(
+    (key) => (GENERATION_ORDER[key] || 0) >= debutRank,
+  ).map((key) => ({
+    key,
+    label: GENERATION_LABELS[key] || formatSlug(key),
+  }));
+});
+
+const flavorEntries = computed<FlavorTextEntry[]>(() => {
+  if (!species.value || !appearance.value) return [];
+  return buildFlavorTextEntries(
+    species.value,
+    appearance.value.versionGroupMap,
+  );
+});
+
+/** 表示中の世代に該当する図鑑説明（複数バージョン分） */
+const flavorEntriesForView = computed<FlavorTextEntry[]>(() => {
+  if (!flavorEntries.value.length) return [];
+  if (!viewGenerationKey.value) {
+    // 現行：最新世代のものを優先
+    const latest = flavorEntries.value
+      .slice()
+      .sort(
+        (a, b) =>
+          (GENERATION_ORDER[b.generationKey] || 0) -
+          (GENERATION_ORDER[a.generationKey] || 0),
+      );
+    const topRank = GENERATION_ORDER[latest[0]?.generationKey || ""] || 0;
+    return latest.filter(
+      (e) => (GENERATION_ORDER[e.generationKey] || 0) === topRank,
+    );
+  }
+  return flavorEntries.value.filter(
+    (e) => e.generationKey === viewGenerationKey.value,
+  );
+});
+
+const viewGenerationLabel = computed<string>(() => {
+  if (!viewGenerationKey.value) return "最新世代";
+  return GENERATION_LABELS[viewGenerationKey.value] || "";
 });
 
 const spriteRef = ref<HTMLImageElement | null>(null);
@@ -257,18 +411,34 @@ async function loadDetail(): Promise<void> {
     const typeNames = fetchedPokemon.types
       .map((entry) => entry.type?.name)
       .filter((v): v is string => Boolean(v));
-    const [movesMap, appearanceData, typeMap, abilityMap, damageRelations] =
-      await Promise.all([
-        fetchMoveNameMap(fetchedPokemon.moves),
-        fetchAppearanceData(fetchedPokemon, fetchedSpecies),
-        fetchTypeNameMap(typeNames),
-        fetchAbilityNameMap(
-          fetchedPokemon.abilities
-            .map((entry) => entry.ability?.name)
-            .filter(Boolean),
-        ),
-        fetchTypeDamageRelations(typeNames),
-      ]);
+    const abilityNames = fetchedPokemon.abilities
+      .map((entry) => entry.ability?.name)
+      .filter((v): v is string => Boolean(v));
+    const eggGroupNames = (fetchedSpecies.egg_groups || [])
+      .map((g) => g.name)
+      .filter(Boolean);
+    const growthRateName = fetchedSpecies.growth_rate?.name;
+    const [
+      movesMap,
+      appearanceData,
+      typeMap,
+      abilityMap,
+      abilityInfo,
+      damageRelations,
+      eggGroupLabelMap,
+      growthRateLabelMap,
+    ] = await Promise.all([
+      fetchMoveNameMap(fetchedPokemon.moves),
+      fetchAppearanceData(fetchedPokemon, fetchedSpecies),
+      fetchTypeNameMap(typeNames),
+      fetchAbilityNameMap(abilityNames),
+      fetchAbilityInfoMap(abilityNames),
+      fetchTypeDamageRelations(typeNames),
+      fetchNamedResourceLabels("egg-group", eggGroupNames),
+      growthRateName
+        ? fetchNamedResourceLabels("growth-rate", [growthRateName])
+        : Promise.resolve({} as Record<string, string>),
+    ]);
 
     pokemon.value = fetchedPokemon;
     species.value = fetchedSpecies;
@@ -276,6 +446,9 @@ async function loadDetail(): Promise<void> {
     moveNameMap.value = movesMap;
     typeNameMap.value = typeMap;
     abilityNameMap.value = abilityMap;
+    abilityInfoMap.value = abilityInfo;
+    eggGroupLabels.value = eggGroupLabelMap;
+    growthRateLabels.value = growthRateLabelMap;
     typeDamageRelations.value = damageRelations;
     evolutionTree.value = null;
     const evoUrl = fetchedSpecies.evolution_chain?.url;
@@ -337,6 +510,28 @@ watch(
       v-if="pokemon && species && appearance && !errored"
       class="detail-shell"
     >
+      <section class="view-generation-bar" aria-label="表示世代切替">
+        <div class="view-generation-bar__copy">
+          <span class="view-generation-bar__title">表示世代</span>
+          <span class="view-generation-bar__hint"
+            >種族値・タイプ・特性・タイプ相性・図鑑説明が連動します</span
+          >
+        </div>
+        <label class="view-generation-bar__select">
+          <span class="visually-hidden">表示世代を選択</span>
+          <select v-model="viewGenerationKey" class="view-gen-select">
+            <option value="">最新世代</option>
+            <option
+              v-for="opt in viewGenerationOptions"
+              :key="opt.key"
+              :value="opt.key"
+            >
+              {{ opt.label }}
+            </option>
+          </select>
+        </label>
+      </section>
+
       <section class="hero-card">
         <div class="hero-visual">
           <img
@@ -361,27 +556,112 @@ watch(
         </div>
       </section>
 
+      <section
+        v-if="flavorEntriesForView.length"
+        class="info-card flavor-card"
+        aria-label="図鑑説明"
+      >
+        <div class="flavor-header">
+          <h2>図鑑の説明</h2>
+          <span class="flavor-gen">{{ viewGenerationLabel }}</span>
+        </div>
+        <ul class="flavor-list">
+          <li
+            v-for="entry in flavorEntriesForView"
+            :key="entry.versionKey"
+            class="flavor-item"
+          >
+            <span class="flavor-version">{{ entry.versionLabel }}</span>
+            <p class="flavor-text">{{ entry.text }}</p>
+          </li>
+        </ul>
+      </section>
+
       <section class="info-grid">
+        <article
+          v-if="abilityEntries.length"
+          class="info-card abilities-card"
+          aria-label="特性"
+        >
+          <h2><span class="card-icon" aria-hidden="true">★</span> 特性</h2>
+          <ul class="abilities-list">
+            <li
+              v-for="ab in abilityEntries"
+              :key="ab.key"
+              class="ability-item"
+              :class="{ 'ability-item--hidden': ab.isHidden }"
+            >
+              <div class="ability-row">
+                <span class="ability-name">{{ ab.nameJa }}</span>
+                <span
+                  class="ability-badge"
+                  :class="
+                    ab.isHidden
+                      ? 'ability-badge--hidden'
+                      : 'ability-badge--normal'
+                  "
+                  >{{ ab.isHidden ? "隠れ特性" : "通常" }}</span
+                >
+              </div>
+              <p v-if="ab.flavorJa" class="ability-flavor">
+                {{ ab.flavorJa }}
+              </p>
+            </li>
+          </ul>
+        </article>
+        <article
+          v-else-if="abilitiesUnavailableNote"
+          class="info-card abilities-card abilities-card--empty"
+          aria-label="特性"
+        >
+          <h2><span class="card-icon" aria-hidden="true">★</span> 特性</h2>
+          <p class="card-note">{{ abilitiesUnavailableNote }}</p>
+        </article>
+
         <article class="info-card">
-          <h2>基本情報</h2>
-          <dl class="info-list">
-            <div>
-              <dt>初登場世代</dt>
-              <dd>{{ generationLabel }}</dd>
+          <h2><span class="card-icon" aria-hidden="true">ⓘ</span> 基本情報</h2>
+          <div class="basic-grid">
+            <div class="basic-cell">
+              <span class="basic-label">高さ</span>
+              <span class="basic-value">{{ heightLabel }}</span>
             </div>
-            <div>
-              <dt>高さ</dt>
-              <dd>{{ heightLabel }}</dd>
+            <div class="basic-cell">
+              <span class="basic-label">重さ</span>
+              <span class="basic-value">{{ weightLabel }}</span>
             </div>
-            <div>
-              <dt>重さ</dt>
-              <dd>{{ weightLabel }}</dd>
+            <div class="basic-cell">
+              <span class="basic-label">性別比</span>
+              <span v-if="genderLabel" class="basic-value basic-value--gender">
+                <span class="gender-male">♂ {{ genderLabel.male }}</span>
+                <span class="gender-female">♀ {{ genderLabel.female }}</span>
+              </span>
+              <span v-else class="basic-value">不明</span>
             </div>
-            <div>
-              <dt>特性</dt>
-              <dd>{{ abilitiesLabel }}</dd>
+            <div class="basic-cell">
+              <span class="basic-label">タマゴグループ</span>
+              <span class="basic-value">{{ eggGroupsLabel }}</span>
             </div>
-          </dl>
+            <div class="basic-cell">
+              <span class="basic-label">孵化歩数</span>
+              <span class="basic-value">{{ hatchStepsLabel }}</span>
+            </div>
+            <div class="basic-cell">
+              <span class="basic-label">成長タイプ</span>
+              <span class="basic-value">{{ growthRateLabel }}</span>
+            </div>
+            <div class="basic-cell">
+              <span class="basic-label">基礎なつき度</span>
+              <span class="basic-value">{{ baseHappinessLabel }}</span>
+            </div>
+            <div class="basic-cell">
+              <span class="basic-label">捕捉率</span>
+              <span class="basic-value">{{ captureRateLabel }}</span>
+            </div>
+            <div class="basic-cell">
+              <span class="basic-label">初登場世代</span>
+              <span class="basic-value">{{ generationLabel }}</span>
+            </div>
+          </div>
         </article>
 
         <article class="info-card">
@@ -670,10 +950,246 @@ watch(
   font-size: 0.88rem;
 }
 
+.card-icon {
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--accent, #2f7fd9);
+}
+
+.abilities-card .card-icon {
+  color: #f0b400;
+}
+
+.abilities-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.ability-item {
+  position: relative;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft, #f7f8fa);
+  display: grid;
+  gap: 4px;
+}
+
+.ability-item--hidden {
+  background: #fff8e1;
+  border-color: #f3d27a;
+}
+
+.ability-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ability-name {
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.ability-flavor {
+  margin: 0;
+  color: var(--text-sub);
+  font-size: 0.88rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.ability-badge {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.ability-badge--normal {
+  background: #e7ecf3;
+  color: #5a6a7d;
+}
+
+.ability-badge--hidden {
+  background: #f3c64a;
+  color: #533c00;
+}
+
+.basic-grid {
+  margin: 14px 0 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 720px) {
+  .basic-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.basic-cell {
+  display: grid;
+  gap: 4px;
+  padding: 10px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft, #f7f8fa);
+  text-align: center;
+}
+
+.basic-label {
+  color: var(--text-sub);
+  font-size: 0.78rem;
+}
+
+.basic-value {
+  font-weight: 700;
+  font-size: 0.98rem;
+}
+
+.basic-value--gender {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.92rem;
+}
+
+.gender-male {
+  color: #2f7fd9;
+}
+
+.gender-female {
+  color: #d94f8a;
+}
+
 .subheading {
   margin: 16px 0 0;
   color: var(--text-sub);
   font-size: 0.86rem;
+}
+
+.view-generation-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.view-generation-bar__copy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+}
+
+.view-generation-bar__title {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.view-generation-bar__hint {
+  color: var(--text-sub);
+  font-size: 0.78rem;
+}
+
+.view-generation-bar__select {
+  display: inline-flex;
+}
+
+.view-gen-select {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--line);
+  background: var(--surface-soft, #f7f8fa)
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%23667' d='M0 0l5 6 5-6z'/></svg>")
+    no-repeat right 12px center;
+  background-size: 10px 6px;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 32px 6px 14px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  min-width: 160px;
+}
+
+.view-gen-select:focus-visible {
+  outline: 2px solid var(--accent, #2f7fd9);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.flavor-card {
+  display: grid;
+  gap: 10px;
+}
+
+.flavor-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.flavor-gen {
+  color: var(--text-sub);
+  font-size: 0.84rem;
+}
+
+.flavor-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.flavor-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-soft, #f7f8fa);
+  border-left: 3px solid var(--accent, #2f7fd9);
+}
+
+.flavor-version {
+  font-size: 0.78rem;
+  color: var(--text-sub);
+  font-weight: 700;
+}
+
+.flavor-text {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .matchup-card {

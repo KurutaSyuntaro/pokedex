@@ -12,7 +12,12 @@
 - 名前検索（日本語名・英名・図鑑番号）
 - 色違いスプライトの切り替え（localStorage で永続化）
 - 詳細ページ
-  - 基本情報（高さ / 重さ / 特性 / 初登場世代）
+  - **表示世代セレクタ**：種族値 / タイプ / 特性 / タイプ相性 / 図鑑説明を選択世代に連動表示（PokeAPI の `past_types` / `past_abilities` / `past_stats` / `past_damage_relations` を解決）
+  - 基本情報（高さ / 重さ / 性別比 / タマゴグループ / 孵化歩数 / 成長タイプ / 基礎なつき度 / 捕捉率 / 初登場世代）
+  - 特性カード（日本語フレーバーテキスト・通常 / 隠れ特性バッジ、第1・2世代では特性なしの注記）
+  - タイプ相性（4倍弱点 / 2倍弱点 / 1/2 / 1/4 / 無効をグルーピング表示）
+  - 進化チェイン（分岐進化対応・進化条件を日本語化）
+  - 図鑑説明文（バージョン別フレーバーテキスト、ja-Hrkt 優先）
   - 出現世代・出現作品（PokeAPI の game indices ベース）
   - 覚える技（世代別フィルター付き）
 - メガ進化 / リージョンフォルム / キョダイマックス / シャリタツのフォルムなどに対応
@@ -42,8 +47,9 @@ src/
     PokemonCard.vue
     TypeBadge.vue
     MoveList.vue
+    EvolutionTree.vue
   composables/
-    usePokeApi.ts            PokeAPI 通信 / キャッシュ / スプライト解決
+    usePokeApi.ts            PokeAPI 通信 / キャッシュ / 世代別解決 / スプライト解決
   data/
     generations.ts
     formRules.ts

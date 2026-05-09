@@ -280,9 +280,10 @@ async function loadDetail(): Promise<void> {
     evolutionTree.value = null;
     const evoUrl = fetchedSpecies.evolution_chain?.url;
     if (evoUrl) {
+      const targetSpeciesId = fetchedSpecies.id;
       buildEvolutionTree(evoUrl)
         .then((tree) => {
-          if (species.value === fetchedSpecies) {
+          if (species.value?.id === targetSpeciesId) {
             evolutionTree.value = tree;
           }
         })

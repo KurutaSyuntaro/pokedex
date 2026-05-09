@@ -7,6 +7,8 @@ export interface Pokemon {
   nameJa: string;
   isForm: boolean;
   formLabel: string;
+  /** 表示用の図鑑番号 (地方図鑑選択時は地方図鑑のエントリー番号、未指定なら dexId を使用) */
+  displayNumber?: number;
 }
 
 export interface MoveEntry {
@@ -68,6 +70,19 @@ export interface PokeApiPokemon {
   types: { slot: number; type: NamedApiResource }[];
   abilities: { slot: number; ability: NamedApiResource }[];
   moves: PokeApiPokemonMove[];
+  stats: PokeApiPokemonStat[];
+}
+
+export interface PokeApiPokemonStat {
+  base_stat: number;
+  effort: number;
+  stat: NamedApiResource;
+}
+
+export interface StatEntry {
+  key: string;
+  label: string;
+  value: number;
 }
 
 export interface PokeApiPokemonMove {

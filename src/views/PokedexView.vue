@@ -2,7 +2,7 @@
 import { onMounted } from "vue";
 import { storeToRefs } from "pinia";
 import { usePokedexStore } from "@/stores/pokedex";
-import { GENERATION_OPTIONS } from "@/data/generations";
+import { POKEDEX_OPTION_GROUPS } from "@/data/pokedexes";
 import { POKEMON_TYPES } from "@/data/pokemonTypes";
 import PokemonCard from "@/components/PokemonCard.vue";
 
@@ -13,9 +13,11 @@ const {
   loading,
   namesLoading,
   typeLoading,
+  pokedexLoading,
   errorMessage,
   searchWord,
-  generation,
+  pokedex,
+  isRegional,
   selectedType,
   showShiny,
 } = storeToRefs(store);
@@ -42,16 +44,22 @@ onMounted(() => store.load());
         />
       </label>
 
-      <label class="control-field" for="limit-select">
-        <span>表示世代</span>
-        <select id="limit-select" v-model="generation">
-          <option
-            v-for="opt in GENERATION_OPTIONS"
-            :key="opt.value"
-            :value="opt.value"
+      <label class="control-field" for="pokedex-select">
+        <span>図鑑</span>
+        <select id="pokedex-select" v-model="pokedex">
+          <optgroup
+            v-for="group in POKEDEX_OPTION_GROUPS"
+            :key="group.group"
+            :label="group.group"
           >
-            {{ opt.label }}
-          </option>
+            <option
+              v-for="opt in group.options"
+              :key="opt.value"
+              :value="opt.value"
+            >
+              {{ opt.label }}
+            </option>
+          </optgroup>
         </select>
       </label>
 
@@ -74,7 +82,15 @@ onMounted(() => store.load());
     <p class="result-count" aria-live="polite">
       <template v-if="loading && !allPokemon.length">読み込み中...</template>
       <template v-else>
-        {{ filteredPokemon.length }}件表示 / 全{{ allPokemon.length }}件
+        <template v-if="isRegional">
+          {{ filteredPokemon.length }}件表示 (地方図鑑)
+        </template>
+        <template v-else>
+          {{ filteredPokemon.length }}件表示 / 全{{ allPokemon.length }}件
+        </template>
+        <span v-if="pokedexLoading" class="names-loading">
+          （図鑑エントリーを取得中…）
+        </span>
         <span v-if="namesLoading" class="names-loading">
           （日本語名を取得中…）
         </span>
@@ -90,6 +106,12 @@ onMounted(() => store.load());
       <p v-if="errorMessage" class="status">{{ errorMessage }}</p>
       <p v-else-if="loading && !allPokemon.length" class="status">
         図鑑データを読み込み中...
+      </p>
+      <p
+        v-else-if="isRegional && pokedexLoading && !filteredPokemon.length"
+        class="status"
+      >
+        図鑑エントリーを読み込み中...
       </p>
       <p v-else-if="!filteredPokemon.length" class="status">
         一致するポケモンがいません。

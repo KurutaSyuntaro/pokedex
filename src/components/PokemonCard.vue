@@ -45,7 +45,9 @@ watch(
     :title="
       pokemon.isForm
         ? `#${pokemon.dexId} ${pokemon.nameJa} (${pokemon.nameEn}, form id: ${pokemon.id})`
-        : `#${pokemon.dexId} ${pokemon.nameJa} (${pokemon.nameEn})`
+        : pokemon.displayNumber !== undefined
+          ? `No.${pokemon.displayNumber} (全国#${pokemon.dexId}) ${pokemon.nameJa} (${pokemon.nameEn})`
+          : `#${pokemon.dexId} ${pokemon.nameJa} (${pokemon.nameEn})`
     "
   >
     <article class="pokemon-card">
@@ -56,7 +58,13 @@ watch(
         loading="lazy"
         decoding="async"
       />
-      <p class="number">#{{ pokemon.dexId }}</p>
+      <p class="number">
+        <template v-if="pokemon.displayNumber !== undefined">
+          No.{{ pokemon.displayNumber }}
+          <span class="sub-number">#{{ pokemon.dexId }}</span>
+        </template>
+        <template v-else>#{{ pokemon.dexId }}</template>
+      </p>
       <p class="name">{{ pokemon.nameJa }}</p>
     </article>
   </router-link>
@@ -100,6 +108,13 @@ watch(
   color: #4b5563;
   font-size: 0.9rem;
   font-weight: 700;
+}
+
+.sub-number {
+  margin-left: 4px;
+  color: var(--text-sub);
+  font-size: 0.7rem;
+  font-weight: 500;
 }
 
 .name {

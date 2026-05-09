@@ -43,6 +43,7 @@ const ABILITY_NAME_CACHE_KEY = "pokedex-ability-name-cache-v1";
 const POKEMON_LIST_CACHE_KEY = "pokedex-pokemon-list-cache-v1";
 const SPECIES_NAME_CACHE_KEY = "pokedex-species-name-cache-v1";
 const TYPE_INDEX_CACHE_KEY = "pokedex-type-index-cache-v1";
+const POKEDEX_ENTRIES_CACHE_KEY = "pokedex-pokedex-entries-cache-v1";
 
 const TRANSPARENT_PIXEL =
   "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
@@ -425,6 +426,45 @@ export async function fetchPokemonNamesByType(
     `[pokedex] type index ready: ${typeName} = ${names.length} names (${Math.round(performance.now() - startedAt)}ms)`,
   );
   return new Set(names);
+}
+
+/**
+ * 指定された地方図鑑（PokeAPI のスラッグ）に登録されている species の
+ * 「英語名 -> エントリー番号」マップを取得。
+ * localStorage キャッシュを利用。
+ */
+export async function fetchPokedexEntries(
+  pokedexName: string,
+): Promise<Record<string, number>> {
+  const cache = readLocalCache<Record<string, Record<string, number>>>(
+    POKEDEX_ENTRIES_CACHE_KEY,
+  );
+  if (cache[pokedexName]) {
+    return cache[pokedexName];
+  }
+
+  const startedAt = performance.now();
+  console.info(`[pokedex] fetching pokedex entries: ${pokedexName}`);
+  const payload = await fetchJson<{
+    pokemon_entries?: {
+      entry_number: number;
+      pokemon_species: { name: string; url: string };
+    }[];
+  }>(`https://pokeapi.co/api/v2/pokedex/${pokedexName}`);
+
+  const entries: Record<string, number> = {};
+  for (const entry of payload.pokemon_entries || []) {
+    const speciesName = entry.pokemon_species?.name;
+    if (!speciesName) continue;
+    entries[speciesName] = entry.entry_number;
+  }
+
+  cache[pokedexName] = entries;
+  writeLocalCache(POKEDEX_ENTRIES_CACHE_KEY, cache);
+  console.info(
+    `[pokedex] pokedex entries ready: ${pokedexName} = ${Object.keys(entries).length} (${Math.round(performance.now() - startedAt)}ms)`,
+  );
+  return entries;
 }
 
 // ---------- 詳細 ----------

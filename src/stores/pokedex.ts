@@ -3,10 +3,16 @@ import { ref, computed, watch } from "vue";
 import { useLocalStorage } from "@vueuse/core";
 import {
   fetchJapaneseNameMapForRange,
+  fetchPokedexEntries,
   fetchPokemonList,
   fetchPokemonNamesByType,
 } from "@/composables/usePokeApi";
 import { GENERATION_RANGES, type GenerationKey } from "@/data/generations";
+import {
+  POKEDEX_OPTION_MAP,
+  isRegionalPokedex,
+  type PokedexKey,
+} from "@/data/pokedexes";
 import type { Pokemon } from "@/types/pokemon";
 
 export const usePokedexStore = defineStore("pokedex", () => {
@@ -14,6 +20,7 @@ export const usePokedexStore = defineStore("pokedex", () => {
   const loading = ref(false);
   const namesLoading = ref(false);
   const typeLoading = ref(false);
+  const pokedexLoading = ref(false);
   const errorMessage = ref("");
 
   /** 取得済みの dexId -> 日本語名 */
@@ -22,28 +29,96 @@ export const usePokedexStore = defineStore("pokedex", () => {
   /** タイプ別の nameEn セット (取得済みのみ) */
   const typeIndex = ref<Record<string, Set<string>>>({});
 
+  /** 地方図鑑別の species名 -> エントリー番号 */
+  const pokedexEntries = ref<Record<string, Record<string, number>>>({});
+
   const searchWord = ref("");
-  const generation = useLocalStorage<GenerationKey>(
-    "pokedex-generation",
-    "gen1",
-  );
+  /**
+   * 図鑑キー (national / genN / 地方図鑑スラッグ)
+   * 旧 "pokedex-generation" キーから初回のみ移行する
+   */
+  const pokedex = useLocalStorage<PokedexKey>("pokedex-pokedex", () => {
+    try {
+      const legacy = window.localStorage.getItem("pokedex-generation");
+      if (legacy) {
+        const parsed = JSON.parse(legacy);
+        if (typeof parsed === "string" && POKEDEX_OPTION_MAP[parsed]) {
+          return parsed as PokedexKey;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return "national";
+  });
   const selectedType = ref<string>("");
   const showShiny = useLocalStorage<boolean>("pokedex-show-shiny", false);
 
-  function decoratePokemon(pokemon: Pokemon): Pokemon {
+  function decoratePokemon(pokemon: Pokemon, displayNumber?: number): Pokemon {
     const baseJa = japaneseNames.value[pokemon.dexId];
-    if (!baseJa) return pokemon;
-    if (!pokemon.isForm) return { ...pokemon, nameJa: baseJa };
-    return { ...pokemon, nameJa: `${baseJa} (${pokemon.formLabel})` };
+    const out: Pokemon = { ...pokemon };
+    if (baseJa) {
+      out.nameJa = pokemon.isForm ? `${baseJa} (${pokemon.formLabel})` : baseJa;
+    }
+    if (displayNumber !== undefined) {
+      out.displayNumber = displayNumber;
+    }
+    return out;
   }
 
+  /** 現在選択中の図鑑が地方図鑑か */
+  const isRegional = computed(() => isRegionalPokedex(pokedex.value));
+
+  /** 地方図鑑のエントリーマップ (未取得なら null) */
+  const currentRegionalEntries = computed<Record<string, number> | null>(() => {
+    if (!isRegional.value) return null;
+    return pokedexEntries.value[pokedex.value] || null;
+  });
+
+  /** 全国図鑑（national / genX）レンジ */
+  const currentNationalRange = computed<[number, number]>(() => {
+    if (isRegional.value) return GENERATION_RANGES.all;
+    if (pokedex.value === "national") return GENERATION_RANGES.all;
+    const key = pokedex.value as GenerationKey;
+    return GENERATION_RANGES[key] || GENERATION_RANGES.all;
+  });
+
   const filteredPokemon = computed<Pokemon[]>(() => {
-    const range = GENERATION_RANGES[generation.value] || GENERATION_RANGES.all;
-    const [minDexId, maxDexId] = range;
     const word = searchWord.value.trim().toLowerCase();
     const typeNames = selectedType.value
       ? typeIndex.value[selectedType.value]
       : null;
+
+    // --- 地方図鑑モード ---
+    if (isRegional.value) {
+      const entries = currentRegionalEntries.value;
+      if (!entries) return [];
+      const list: Pokemon[] = [];
+      for (const pokemon of allPokemon.value) {
+        // 地方図鑑は species ベースなのでフォルムは対象外
+        if (pokemon.isForm) continue;
+        const entryNumber = entries[pokemon.nameEn];
+        if (entryNumber === undefined) continue;
+        if (typeNames && !typeNames.has(pokemon.nameEn)) continue;
+        const decorated = decoratePokemon(pokemon, entryNumber);
+        if (word) {
+          if (
+            !decorated.nameJa.toLowerCase().includes(word) &&
+            !decorated.nameEn.includes(word) &&
+            !String(decorated.dexId).includes(word) &&
+            !String(entryNumber).includes(word)
+          ) {
+            continue;
+          }
+        }
+        list.push(decorated);
+      }
+      list.sort((a, b) => (a.displayNumber ?? 0) - (b.displayNumber ?? 0));
+      return list;
+    }
+
+    // --- 全国図鑑 / 世代別モード ---
+    const [minDexId, maxDexId] = currentNationalRange.value;
     const list: Pokemon[] = [];
     for (const pokemon of allPokemon.value) {
       if (pokemon.dexId < minDexId || pokemon.dexId > maxDexId) continue;
@@ -66,6 +141,7 @@ export const usePokedexStore = defineStore("pokedex", () => {
   let listPromise: Promise<void> | null = null;
   const inflightRanges = new Map<string, Promise<void>>();
   const inflightTypes = new Map<string, Promise<void>>();
+  const inflightPokedexes = new Map<string, Promise<void>>();
 
   async function ensureNamesForRange(
     minDexId: number,
@@ -97,9 +173,13 @@ export const usePokedexStore = defineStore("pokedex", () => {
     return promise;
   }
 
-  function ensureNamesForCurrentGeneration(): Promise<void> {
-    const range = GENERATION_RANGES[generation.value] || GENERATION_RANGES.all;
-    return ensureNamesForRange(range[0], range[1]);
+  function ensureNamesForCurrentSelection(): Promise<void> {
+    // 地方図鑑選択時はどの dexId が必要か未確定なので全範囲取得
+    if (isRegional.value) {
+      return ensureNamesForRange(1, GENERATION_RANGES.all[1]);
+    }
+    const [min, max] = currentNationalRange.value;
+    return ensureNamesForRange(min, max);
   }
 
   async function ensureTypeIndex(typeName: string): Promise<void> {
@@ -126,9 +206,38 @@ export const usePokedexStore = defineStore("pokedex", () => {
     return promise;
   }
 
+  async function ensurePokedexEntries(pokedexName: string): Promise<void> {
+    if (!pokedexName || !isRegionalPokedex(pokedexName)) return;
+    if (pokedexEntries.value[pokedexName]) return;
+    const existing = inflightPokedexes.get(pokedexName);
+    if (existing) return existing;
+
+    pokedexLoading.value = true;
+    const promise = (async () => {
+      try {
+        const entries = await fetchPokedexEntries(pokedexName);
+        pokedexEntries.value = {
+          ...pokedexEntries.value,
+          [pokedexName]: entries,
+        };
+      } catch (error) {
+        console.error(error);
+        errorMessage.value = "図鑑データの取得に失敗しました。";
+      } finally {
+        inflightPokedexes.delete(pokedexName);
+        if (inflightPokedexes.size === 0) {
+          pokedexLoading.value = false;
+        }
+      }
+    })();
+    inflightPokedexes.set(pokedexName, promise);
+    return promise;
+  }
+
   async function load(): Promise<void> {
     if (allPokemon.value.length) {
-      void ensureNamesForCurrentGeneration();
+      void ensureNamesForCurrentSelection();
+      if (isRegional.value) void ensurePokedexEntries(pokedex.value);
       return;
     }
     if (listPromise) return listPromise;
@@ -138,7 +247,8 @@ export const usePokedexStore = defineStore("pokedex", () => {
       try {
         const list = await fetchPokemonList();
         allPokemon.value = list;
-        void ensureNamesForCurrentGeneration();
+        void ensureNamesForCurrentSelection();
+        if (isRegional.value) void ensurePokedexEntries(pokedex.value);
       } catch (error) {
         console.error(error);
         errorMessage.value =
@@ -150,9 +260,11 @@ export const usePokedexStore = defineStore("pokedex", () => {
     return listPromise;
   }
 
-  watch(generation, () => {
-    if (allPokemon.value.length) {
-      void ensureNamesForCurrentGeneration();
+  watch(pokedex, (value) => {
+    if (!allPokemon.value.length) return;
+    void ensureNamesForCurrentSelection();
+    if (isRegionalPokedex(value)) {
+      void ensurePokedexEntries(value);
     }
   });
 
@@ -173,9 +285,11 @@ export const usePokedexStore = defineStore("pokedex", () => {
     loading,
     namesLoading,
     typeLoading,
+    pokedexLoading,
     errorMessage,
     searchWord,
-    generation,
+    pokedex,
+    isRegional,
     selectedType,
     showShiny,
     load,

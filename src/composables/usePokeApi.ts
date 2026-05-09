@@ -14,6 +14,7 @@ import {
   SUPPORTED_FORM_RULES,
 } from "@/data/formRules";
 import { lookupJaOverride } from "@/data/jaNameOverrides";
+import { POKEMON_TYPES } from "@/data/pokemonTypes";
 import type {
   AppearanceData,
   MoveEntry,
@@ -23,6 +24,8 @@ import type {
   PokeApiPokemonMove,
   PokeApiSpecies,
   Pokemon,
+  TypeDamageRelations,
+  TypeMatchupGroup,
   VersionGroupCacheEntry,
 } from "@/types/pokemon";
 
@@ -44,6 +47,8 @@ const POKEMON_LIST_CACHE_KEY = "pokedex-pokemon-list-cache-v1";
 const SPECIES_NAME_CACHE_KEY = "pokedex-species-name-cache-v1";
 const TYPE_INDEX_CACHE_KEY = "pokedex-type-index-cache-v1";
 const POKEDEX_ENTRIES_CACHE_KEY = "pokedex-pokedex-entries-cache-v1";
+const TYPE_DAMAGE_RELATIONS_CACHE_KEY =
+  "pokedex-type-damage-relations-cache-v1";
 
 const TRANSPARENT_PIXEL =
   "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
@@ -860,6 +865,92 @@ export function generationLabelFor(generationKey: string): string {
 
 export function parseFormFromName(name: string) {
   return parseSupportedForm(name);
+}
+
+// ---------- タイプ相性 ----------
+
+/**
+ * 指定タイプ（防御側）の damage_relations を取得。
+ * localStorage に永続キャッシュ（タイプは18種で固定なので長期キャッシュ可）。
+ */
+export async function fetchTypeDamageRelations(
+  typeNames: string[],
+): Promise<Record<string, TypeDamageRelations>> {
+  const cache = readLocalCache<Record<string, TypeDamageRelations>>(
+    TYPE_DAMAGE_RELATIONS_CACHE_KEY,
+  );
+  const unique = [...new Set(typeNames.filter(Boolean))];
+  const missing = unique.filter((name) => !cache[name]);
+
+  for (const group of chunk(missing, FETCH_CONCURRENCY)) {
+    const results = await Promise.all(
+      group.map(async (name): Promise<[string, TypeDamageRelations]> => {
+        const payload = await fetchJson<{
+          damage_relations: TypeDamageRelations;
+        }>(`https://pokeapi.co/api/v2/type/${name}`);
+        return [name, payload.damage_relations];
+      }),
+    );
+    for (const [name, rel] of results) {
+      cache[name] = rel;
+    }
+  }
+  if (missing.length) {
+    writeLocalCache(TYPE_DAMAGE_RELATIONS_CACHE_KEY, cache);
+  }
+  return Object.fromEntries(unique.map((n) => [n, cache[n]]));
+}
+
+const MATCHUP_GROUP_DEFS: {
+  multiplier: number;
+  label: string;
+  variant: TypeMatchupGroup["variant"];
+}[] = [
+  { multiplier: 4, label: "4倍弱点", variant: "weak4" },
+  { multiplier: 2, label: "2倍弱点", variant: "weak2" },
+  { multiplier: 0.5, label: "1/2 (0.5倍)", variant: "half" },
+  { multiplier: 0.25, label: "1/4 (0.25倍)", variant: "quarter" },
+  { multiplier: 0, label: "無効 (0倍)", variant: "immune" },
+];
+
+/**
+ * 防御側タイプ（最大2つ）から、攻撃側18タイプそれぞれの被ダメージ倍率を計算し、
+ * 表示用にグルーピングして返す。等倍はノイズなので除外。
+ */
+export function computeTypeMatchups(
+  defenderTypes: string[],
+  damageRelations: Record<string, TypeDamageRelations>,
+): TypeMatchupGroup[] {
+  const allAttackTypes = POKEMON_TYPES.map((t) => t.value);
+  const multipliers = new Map<string, number>();
+
+  for (const atk of allAttackTypes) {
+    let factor = 1;
+    for (const def of defenderTypes) {
+      const rel = damageRelations[def];
+      if (!rel) continue;
+      if (rel.no_damage_from?.some((t) => t.name === atk)) {
+        factor *= 0;
+      } else if (rel.double_damage_from?.some((t) => t.name === atk)) {
+        factor *= 2;
+      } else if (rel.half_damage_from?.some((t) => t.name === atk)) {
+        factor *= 0.5;
+      }
+    }
+    multipliers.set(atk, factor);
+  }
+
+  return MATCHUP_GROUP_DEFS.map((def) => ({
+    multiplier: def.multiplier,
+    label: def.label,
+    variant: def.variant,
+    types: allAttackTypes
+      .filter((atk) => multipliers.get(atk) === def.multiplier)
+      .map((atk) => ({
+        value: atk,
+        label: POKEMON_TYPES.find((t) => t.value === atk)?.label || atk,
+      })),
+  })).filter((group) => group.types.length > 0);
 }
 
 export { formatSlug };

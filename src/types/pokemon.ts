@@ -103,3 +103,21 @@ export interface PokeApiSpecies {
   generation?: NamedApiResource;
   genera?: { genus: string; language: NamedApiResource }[];
 }
+
+export interface TypeDamageRelations {
+  double_damage_from: NamedApiResource[];
+  half_damage_from: NamedApiResource[];
+  no_damage_from: NamedApiResource[];
+}
+
+export interface TypeMatchupType {
+  value: string;
+  label: string;
+}
+
+export interface TypeMatchupGroup {
+  multiplier: number;
+  label: string;
+  variant: "weak4" | "weak2" | "half" | "quarter" | "immune";
+  types: TypeMatchupType[];
+}

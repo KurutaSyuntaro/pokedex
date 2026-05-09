@@ -8,11 +8,13 @@ import {
   buildSpriteCandidates,
   buildMoveRecords,
   collectMoveGenerationOptions,
+  computeTypeMatchups,
   fetchAbilityNameMap,
   fetchAppearanceData,
   fetchMoveNameMap,
   fetchPokemonDetail,
   fetchSpeciesDetail,
+  fetchTypeDamageRelations,
   fetchTypeNameMap,
   findSpeciesGenusJa,
   formatSlug,
@@ -27,6 +29,8 @@ import type {
   PokeApiPokemon,
   PokeApiSpecies,
   StatEntry,
+  TypeDamageRelations,
+  TypeMatchupGroup,
 } from "@/types/pokemon";
 import TypeBadge from "@/components/TypeBadge.vue";
 import MoveList from "@/components/MoveList.vue";
@@ -47,6 +51,7 @@ const abilityNameMap = ref<Record<string, string>>({});
 const moveNameMap = ref<Record<string, string>>({});
 const moveGenerationOptions = ref<MoveGenerationOption[]>([]);
 const selectedGenerationKey = ref<string>("");
+const typeDamageRelations = ref<Record<string, TypeDamageRelations>>({});
 
 const dexFromQuery = computed<number | null>(() => {
   const v = route.query.dex;
@@ -187,6 +192,17 @@ const movesGenerationLabel = computed<string>(
     )?.label || "世代情報なし",
 );
 
+const typeMatchups = computed<TypeMatchupGroup[]>(() => {
+  if (!pokemon.value) return [];
+  const defenderTypes = pokemon.value.types
+    .slice()
+    .sort((a, b) => a.slot - b.slot)
+    .map((entry) => entry.type?.name)
+    .filter((v): v is string => Boolean(v));
+  if (!defenderTypes.length) return [];
+  return computeTypeMatchups(defenderTypes, typeDamageRelations.value);
+});
+
 const dexNumber = computed(() => {
   if (dexFromQuery.value) return dexFromQuery.value;
   return species.value?.id || pokemon.value?.id || 0;
@@ -234,18 +250,21 @@ async function loadDetail(): Promise<void> {
   try {
     const fetchedPokemon = await fetchPokemonDetail(targetName);
     const fetchedSpecies = await fetchSpeciesDetail(fetchedPokemon.species.url);
-    const [movesMap, appearanceData, typeMap, abilityMap] = await Promise.all([
-      fetchMoveNameMap(fetchedPokemon.moves),
-      fetchAppearanceData(fetchedPokemon, fetchedSpecies),
-      fetchTypeNameMap(
-        fetchedPokemon.types.map((entry) => entry.type?.name).filter(Boolean),
-      ),
-      fetchAbilityNameMap(
-        fetchedPokemon.abilities
-          .map((entry) => entry.ability?.name)
-          .filter(Boolean),
-      ),
-    ]);
+    const typeNames = fetchedPokemon.types
+      .map((entry) => entry.type?.name)
+      .filter((v): v is string => Boolean(v));
+    const [movesMap, appearanceData, typeMap, abilityMap, damageRelations] =
+      await Promise.all([
+        fetchMoveNameMap(fetchedPokemon.moves),
+        fetchAppearanceData(fetchedPokemon, fetchedSpecies),
+        fetchTypeNameMap(typeNames),
+        fetchAbilityNameMap(
+          fetchedPokemon.abilities
+            .map((entry) => entry.ability?.name)
+            .filter(Boolean),
+        ),
+        fetchTypeDamageRelations(typeNames),
+      ]);
 
     pokemon.value = fetchedPokemon;
     species.value = fetchedSpecies;
@@ -253,6 +272,7 @@ async function loadDetail(): Promise<void> {
     moveNameMap.value = movesMap;
     typeNameMap.value = typeMap;
     abilityNameMap.value = abilityMap;
+    typeDamageRelations.value = damageRelations;
     moveGenerationOptions.value = collectMoveGenerationOptions(
       fetchedPokemon,
       appearanceData.versionGroupMap,
@@ -379,6 +399,34 @@ watch(
             />
           </div>
         </article>
+      </section>
+
+      <section
+        v-if="typeMatchups.length"
+        class="info-card matchup-card"
+        aria-label="タイプ相性"
+      >
+        <div class="matchup-header">
+          <h2>タイプ相性</h2>
+          <p class="card-note">攻撃を受けた時のダメージ倍率</p>
+        </div>
+        <ul class="matchup-list">
+          <li
+            v-for="group in typeMatchups"
+            :key="group.variant"
+            class="matchup-row"
+            :class="`matchup-row--${group.variant}`"
+          >
+            <span class="matchup-label">{{ group.label }}</span>
+            <div class="matchup-types">
+              <TypeBadge
+                v-for="t in group.types"
+                :key="t.value"
+                :label="t.label"
+              />
+            </div>
+          </li>
+        </ul>
       </section>
 
       <section class="info-card stats-card">
@@ -591,6 +639,91 @@ watch(
   margin: 16px 0 0;
   color: var(--text-sub);
   font-size: 0.86rem;
+}
+
+.matchup-card {
+  display: grid;
+  gap: 12px;
+}
+
+.matchup-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.matchup-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.matchup-row {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-soft, #f7f8fa);
+  border-left: 4px solid transparent;
+}
+
+.matchup-label {
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+
+.matchup-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.matchup-row--weak4 {
+  border-left-color: #d9322f;
+  background: #fdecec;
+}
+.matchup-row--weak4 .matchup-label {
+  color: #b1231f;
+}
+.matchup-row--weak2 {
+  border-left-color: #ef6c4a;
+  background: #fdf1ec;
+}
+.matchup-row--weak2 .matchup-label {
+  color: #c14a2b;
+}
+.matchup-row--half {
+  border-left-color: #2ea36c;
+  background: #ebf7f0;
+}
+.matchup-row--half .matchup-label {
+  color: #1f7a4f;
+}
+.matchup-row--quarter {
+  border-left-color: #2f7fd9;
+  background: #eaf2fb;
+}
+.matchup-row--quarter .matchup-label {
+  color: #1f5da8;
+}
+.matchup-row--immune {
+  border-left-color: #4a4a55;
+  background: #ececef;
+}
+.matchup-row--immune .matchup-label {
+  color: #2d2d36;
+}
+
+@media (max-width: 540px) {
+  .matchup-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .stats-card {

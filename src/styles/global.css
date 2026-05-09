@@ -1,0 +1,32 @@
+:root {
+  --bg: #f2f4f7;
+  --surface: #ffffff;
+  --surface-soft: #eef2f8;
+  --text: #1f2937;
+  --text-sub: #5b6472;
+  --line: #d8dee8;
+  --accent: #0f766e;
+  --accent-soft: #def7f3;
+  --shadow: 0 12px 28px rgba(0, 25, 53, 0.1);
+  --radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  color: var(--text);
+  font-family: "Zen Kaku Gothic New", "Hiragino Kaku Gothic ProN", sans-serif;
+  background:
+    radial-gradient(circle at 20% 0%, #d4f7ec 0%, rgba(212, 247, 236, 0) 42%),
+    radial-gradient(circle at 100% 10%, #e3edff 0%, rgba(227, 237, 255, 0) 35%),
+    var(--bg);
+}

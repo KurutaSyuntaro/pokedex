@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="ポケモンの詳細情報ページ">
+  <title>ポケモン詳細</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/detail.css">
+</head>
+<body>
+  <header class="page-header">
+    <a class="back-link" href="index.html">← 図鑑一覧へ戻る</a>
+    <label class="shiny-toggle" for="shiny-toggle">
+      <input id="shiny-toggle" type="checkbox">
+      <span>色違いを表示</span>
+    </label>
+  </header>
+
+  <main class="detail-main">
+    <p id="detail-status" class="detail-status">詳細データを読み込み中...</p>
+
+    <section id="detail-shell" class="detail-shell" hidden>
+      <section class="hero-card">
+        <div class="hero-visual">
+          <img id="detail-sprite" class="detail-sprite" alt="" loading="lazy" decoding="async">
+        </div>
+        <div class="hero-copy">
+          <p id="detail-number" class="detail-number"></p>
+          <h1 id="detail-name" class="detail-name"></h1>
+          <p id="detail-subtitle" class="detail-subtitle"></p>
+          <div id="detail-types" class="tag-list" aria-label="タイプ"></div>
+        </div>
+      </section>
+
+      <section class="info-grid">
+        <article class="info-card">
+          <h2>基本情報</h2>
+          <dl class="info-list">
+            <div>
+              <dt>初登場世代</dt>
+              <dd id="detail-generation"></dd>
+            </div>
+            <div>
+              <dt>高さ</dt>
+              <dd id="detail-height"></dd>
+            </div>
+            <div>
+              <dt>重さ</dt>
+              <dd id="detail-weight"></dd>
+            </div>
+            <div>
+              <dt>特性</dt>
+              <dd id="detail-abilities"></dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="info-card">
+          <h2>出現世代・作品</h2>
+          <p id="detail-version-note" class="card-note">PokeAPI の game indices をもとに表示</p>
+          <h3 class="subheading">出現世代</h3>
+          <div id="detail-appearance-generations" class="tag-list" aria-label="出現世代"></div>
+          <h3 class="subheading">出現作品</h3>
+          <div id="detail-versions" class="tag-list" aria-label="収録バージョン"></div>
+        </article>
+      </section>
+
+      <section class="moves-card">
+        <div class="moves-header">
+          <h2>覚える技</h2>
+          <div class="moves-controls">
+            <label class="move-generation-field" for="move-generation-select">
+              <span>表示世代</span>
+              <select id="move-generation-select"></select>
+            </label>
+            <p id="detail-move-count" class="card-note"></p>
+          </div>
+        </div>
+        <div id="detail-moves" class="move-groups"></div>
+      </section>
+    </section>
+  </main>
+
+  <script src="js/detail.js"></script>
+</body>
+</html>
